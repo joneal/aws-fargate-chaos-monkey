@@ -1,0 +1,99 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Creates Lambda function framework for periodically killing a random Fargate task.
+Parameters:
+  PeriodCron:
+    Type: String
+    # Fire every 15 minutes (00,15,30,45), only from 08:00 AM to 05:00 PM Eastern Daylight Time, and only Monday-Friday.
+    Default: 0/15 12-21 ? * MON-FRI * 
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: ""     
+        Parameters:
+          - PeriodCron
+    ParameterLabels: 
+      PeriodCron:
+        default: Period of 15 minutes, in CRON format, in which a Fargate task should be killed.  Important that event fires at 00, 15, 30, 45 minutes past the hour.  Note that event only fires during normal business hours (EDT).
+Resources: 
+  ChaosMonkeyFargatePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:       
+      ManagedPolicyName: chaos-monkey-fargate-policy
+      Description: Allow Lambda function to call CloudWatch logging, ECS listTasks and stopTask, and SNS write service actions.
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: Allow
+            Action: 
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: "arn:aws:logs:*:*:*"       
+          - Effect: Allow
+            Action: 
+              - ecs:listTasks
+              - ecs:stopTask
+            Resource: "*"   
+          - Effect: Allow
+            Action:
+              - sns:Publish
+            Resource: "*"          
+  ChaosMonkeyFargateRole:
+    Type: AWS::IAM::Role
+    DependsOn: ChaosMonkeyFargatePolicy
+    Properties:
+      RoleName: chaos-monkey-fargate-role
+      ManagedPolicyArns:
+        - Ref: ChaosMonkeyFargatePolicy
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+              - lambda.amazonaws.com
+          Action:
+            - sts:AssumeRole
+      Path: "/"   
+  ChaosMonkeyFargateProfile:  
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: chaos-monkey-fargate-role
+      Path: "/"
+      Roles:
+        - Ref: ChaosMonkeyFargateRole    
+  CloudwatchSchedulePeriod:
+    Type: AWS::Events::Rule
+    DependsOn: ChaosMonkeyFargateFunction
+    Properties:
+      Description: Trigger to fire Chaos Monkey Lambda function every 15 minutes at 00, 15, 30, 45 past the hour.
+      ScheduleExpression: !Sub 'cron(${PeriodCron})'     
+      Name: chaos-monkey-fargate-period-event
+      State: 'ENABLED'
+      Targets:
+        - Arn: !GetAtt ChaosMonkeyFargateFunction.Arn
+          Id: chaos-monkey-fargate  
+  PermissionForPeriodEventToInvokeLambda: 
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: !GetAtt ChaosMonkeyFargateFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt CloudwatchSchedulePeriod.Arn                  
+  ChaosMonkeyFargateFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: ChaosMonkeyFargateRole
+    Properties:
+      Description: Function for shutting down a Fargate task at random.
+      Code:
+        ZipFile: >
+          exports.handler = function(event) {
+            // Paste the *real* function from Git
+          };
+      FunctionName: chaos-monkey-fargate
+      Handler: 'index.handler'
+      Role: !GetAtt ChaosMonkeyFargateRole.Arn
+      Runtime: 'nodejs8.10'
+      Timeout: 3 
